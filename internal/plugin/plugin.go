@@ -214,7 +214,7 @@ func (m *Manager) registerManagement(request []byte) ([]byte, error) {
 		Routes: []struct {
 			Method string `json:"method"`
 			Path   string `json:"path"`
-		}{{Method: "POST", Path: "/plugins/" + pluginName + "/quota"}},
+		}{{Method: "POST", Path: "/plugins/" + pluginName + "/quota-usage"}},
 		Resources: []struct {
 			Path        string `json:"path"`
 			Menu        string `json:"menu"`

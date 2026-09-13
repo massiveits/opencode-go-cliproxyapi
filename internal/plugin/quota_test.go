@@ -21,7 +21,7 @@ func TestManagementRegistration(t *testing.T) {
 		Resources []struct{ Path, Menu, Description string } `json:"resources"`
 	}
 	decodeResult(t, mustHandle(t, m, pluginabi.MethodManagementRegister, []byte(`{}`)), &got)
-	if len(got.Routes) != 1 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota" {
+	if len(got.Routes) != 1 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" {
 		t.Fatalf("routes = %+v", got.Routes)
 	}
 	if len(got.Resources) != 1 || got.Resources[0].Path != "/quota" || got.Resources[0].Menu != "OpenCode Go Quota" {
@@ -39,7 +39,7 @@ func TestQuotaListDoesNotCallHost(t *testing.T) {
 	m := NewManager(NewHostBridge(f.call))
 	m.cfg = config.Config{APIKeys: []config.APIKey{{Value: "quota-key-a"}, {Value: "quota-key-b"}}}
 	var got quotaList
-	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota", Body: []byte(`{}`)})
+	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestQuotaRefresh(t *testing.T) {
 	m := NewManager(NewHostBridge(f.call))
 	m.cfg = config.Config{BaseURL: "https://quota.test/v1/", RequestTimeout: config.DefaultRequestTimeout, APIKeys: []config.APIKey{{Value: key}}}
 	id, _ := quotaIdentity(key)
-	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota", Body: []byte(`{"key_id":"` + id + `"}`)})
+	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{"key_id":"` + id + `"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestQuotaUnknownKeyAndResource(t *testing.T) {
 	m := NewManager(NewHostBridge(f.call))
 	m.cfg = config.Config{APIKeys: []config.APIKey{{Value: key}}}
 	unknown := "opencode-go-key-unknown"
-	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota", Body: []byte(`{"key_id":"` + unknown + `"}`)})
+	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{"key_id":"` + unknown + `"}`)})
 	if err != nil || resp.StatusCode != http.StatusNotFound || strings.Contains(string(resp.Body), key) || strings.Contains(string(resp.Body), unknown) || len(f.callsOf(pluginabi.MethodHostHTTPDo)) != 0 {
 		t.Fatalf("unknown response = %+v err=%v calls=%v", resp, err, f.callsOf(pluginabi.MethodHostHTTPDo))
 	}
@@ -132,7 +132,7 @@ func TestQuotaErrorsAreRedacted(t *testing.T) {
 			f := &fakeCaller{responder: responder}
 			m := NewManager(NewHostBridge(f.call))
 			m.cfg = config.Config{BaseURL: "https://quota.test/v1", RequestTimeout: config.DefaultRequestTimeout, APIKeys: []config.APIKey{{Value: key}}}
-			resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota", Body: []byte(`{"key_id":"` + id + `"}`)})
+			resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{"key_id":"` + id + `"}`)})
 			if err != nil || resp.StatusCode != http.StatusBadGateway || strings.Contains(string(resp.Body), key) || strings.Contains(string(resp.Body), "upstream body") {
 				t.Fatalf("response = %+v err=%v", resp, err)
 			}
