@@ -57,6 +57,12 @@ go build -buildmode=c-shared -o plugins/linux/amd64/opencode-go-cliproxyapi.so .
 go build -buildmode=c-shared -o plugins/darwin/arm64/opencode-go-cliproxyapi.dylib .
 ```
 
+Tagged release builds set the registered plugin version from the tag. For a custom
+build, add `-ldflags "-X opencode-go-cliproxyapi/internal/plugin.pluginVersion=0.1.7-review.<commit>"`
+to the build command and use that same version in the release archive and plugin
+store manifest. Use a new version for each build so an update does not replace a
+loaded library with different bytes under the same name.
+
 Place the compiled binary into your CLIProxyAPI plugin directory (e.g. `<cliproxyapi_root>/plugins/<os>/<arch>/`).
 
 ## Configuration
