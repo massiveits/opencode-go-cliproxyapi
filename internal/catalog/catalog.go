@@ -250,11 +250,6 @@ func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 	if len(entries) > 0 {
 		metadata = m.fetchMetadata(ctx)
 	}
-	m.mu.Lock()
-	if metadata == nil {
-		metadata = m.metadata // models.dev is advisory; retain the last good metadata.
-	}
-	m.mu.Unlock()
 	m.swap(entries, metadata, warns...)
 	return nil
 }
@@ -301,6 +296,11 @@ func (m *Manager) fail(category string) error {
 // extraWarns are caller-supplied snapshot diagnostics (e.g. decode-level
 // shape-drift notices) recorded alongside the per-entry ones.
 func (m *Manager) swap(entries []rawModel, metadata map[string]modelsDevModel, extraWarns ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if metadata == nil {
+		metadata = m.metadata // select fallback and publish the snapshot under one lock.
+	}
 	models := make([]ModelRecord, 0, len(entries))
 	index := make(map[string]ModelRecord, len(entries)*2)
 	var unsup []UnsupportedModel
@@ -394,8 +394,6 @@ func (m *Manager) swap(entries []rawModel, metadata map[string]modelsDevModel, e
 		index[rec.PublicID] = rec
 		index[rec.UpstreamID] = rec
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.raw, m.metadata, m.models, m.index, m.unsup, m.warns = entries, metadata, models, index, unsup, warns
 }
 

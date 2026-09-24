@@ -56,15 +56,33 @@ type messagesRequest struct {
 func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "claude":
+		body, eErr := shared.RewriteModelID(upstreamModel, sourceBody, "claude")
+		if eErr != nil {
+			return nil, eErr
+		}
 		var native struct {
 			Thinking *shared.ClaudeThinking `json:"thinking"`
 		}
-		if json.Unmarshal(sourceBody, &native) == nil && native.Thinking != nil && native.Thinking.Type == "disabled" {
-			if eErr := thinking.ValidateEffort("none", ts); eErr != nil {
-				return nil, eErr
+		if json.Unmarshal(body, &native) != nil {
+			return nil, errclass.Translation("invalid thinking control")
+		}
+		if native.Thinking != nil {
+			switch native.Thinking.Type {
+			case "disabled":
+				if eErr := thinking.ValidateEffort("none", ts); eErr != nil {
+					return nil, eErr
+				}
+			case "enabled":
+				budget := native.Thinking.BudgetTokens
+				supported := thinking.SupportedLevels(ts)
+				if budget <= 0 || ts != nil && (ts.Min > 0 && budget < int64(ts.Min) ||
+					ts.Max > 0 && budget > int64(ts.Max) ||
+					len(supported) == 1 && supported[0] == "none") {
+					return nil, &errclass.Error{Class: errclass.ClassUnsupported, Message: "thinking budget_tokens is not supported for this model"}
+				}
 			}
 		}
-		return shared.RewriteModelID(upstreamModel, sourceBody, "claude")
+		return body, nil
 	case "openai":
 		return fromChatCompletions(upstreamModel, sourceBody, ts)
 	case "openai-response":

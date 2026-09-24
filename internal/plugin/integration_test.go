@@ -75,6 +75,9 @@ func (b *forwardingBridge) call(method string, payload []byte) ([]byte, error) {
 		if err != nil {
 			return hostErr("test", "undecodable host.http.do payload"), nil
 		}
+		if wire.URL == "https://models.dev/api.json" {
+			return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusServiceUnavailable}), nil
+		}
 		resp, err := b.perform(wire)
 		if err != nil {
 			return hostErr("transport", err.Error()), nil

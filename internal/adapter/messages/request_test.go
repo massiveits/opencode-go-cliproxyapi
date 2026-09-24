@@ -68,6 +68,38 @@ func TestBuildRequestClaudeMalformed(t *testing.T) {
 	}
 }
 
+func TestNativeClaudeThinkingCapability(t *testing.T) {
+	bounded := &pluginapi.ThinkingSupport{Min: 1024, Max: 4096, Levels: []string{"low", "medium"}}
+	cases := []struct {
+		name     string
+		thinking string
+		ts       *pluginapi.ThinkingSupport
+		wantErr  errclass.Class
+	}{
+		{"within bounds", `{"type":"enabled","budget_tokens":2048}`, bounded, ""},
+		{"below minimum", `{"type":"enabled","budget_tokens":512}`, bounded, errclass.ClassUnsupported},
+		{"above maximum", `{"type":"enabled","budget_tokens":8192}`, bounded, errclass.ClassUnsupported},
+		{"zero budget", `{"type":"enabled","budget_tokens":0}`, bounded, errclass.ClassUnsupported},
+		{"missing budget", `{"type":"enabled"}`, bounded, errclass.ClassUnsupported},
+		{"no enabled level", `{"type":"enabled","budget_tokens":2048}`, &pluginapi.ThinkingSupport{Levels: []string{"none"}}, errclass.ClassUnsupported},
+		{"unknown capability fallback", `{"type":"enabled","budget_tokens":2048}`, nil, ""},
+		{"malformed budget", `{"type":"enabled","budget_tokens":"bad"}`, bounded, errclass.ClassTranslation},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"m","messages":[],"max_tokens":10000,"thinking":` + tc.thinking + `}`)
+			out, eErr := BuildRequest("m", "claude", body, tc.ts)
+			if tc.wantErr == "" {
+				if eErr != nil || string(out) != string(body) {
+					t.Fatalf("native passthrough changed: %s, %v", out, eErr)
+				}
+			} else if eErr == nil || eErr.Class != tc.wantErr {
+				t.Fatalf("error = %v, want %s", eErr, tc.wantErr)
+			}
+		})
+	}
+}
+
 func chatReq(t *testing.T, body string) (map[string]any, *errclass.Error) {
 	return chatReqTS(t, nil, body)
 }
