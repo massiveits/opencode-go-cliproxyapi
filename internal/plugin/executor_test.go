@@ -126,6 +126,9 @@ func upstreamRouter(t *testing.T, bodies map[string]string) func(string, []byte)
 		var wire map[string]any
 		_ = json.Unmarshal(payload, &wire)
 		url, _ := wire["url"].(string)
+		if url == "https://models.dev/api.json" {
+			return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusServiceUnavailable}), nil
+		}
 		for suffix, body := range bodies {
 			if strings.HasSuffix(url, suffix) {
 				return hostOK(pluginapi.HTTPResponse{
@@ -147,6 +150,9 @@ func wrapWithCatalog(catalogBody string, next func(string, []byte) ([]byte, erro
 		var wire map[string]any
 		_ = json.Unmarshal(payload, &wire)
 		if method == pluginabi.MethodHostHTTPDo {
+			if url, _ := wire["url"].(string); url == "https://models.dev/api.json" {
+				return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusServiceUnavailable}), nil
+			}
 			if url, _ := wire["url"].(string); strings.HasSuffix(url, "/models") {
 				return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(catalogBody)}), nil
 			}

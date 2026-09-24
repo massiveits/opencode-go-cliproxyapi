@@ -47,33 +47,51 @@ type RouteOverride struct {
 	Endpoint string `yaml:"endpoint"`
 }
 
+type ThinkingMetadata struct {
+	Min            *int     `yaml:"min"`
+	Max            *int     `yaml:"max"`
+	ZeroAllowed    *bool    `yaml:"zero-allowed"`
+	DynamicAllowed *bool    `yaml:"dynamic-allowed"`
+	Levels         []string `yaml:"levels"`
+}
+
+type ModelMetadataOverride struct {
+	ContextLimit *int64            `yaml:"context-limit"`
+	OutputLimit  *int64            `yaml:"output-limit"`
+	InputModes   []string          `yaml:"input-modes"`
+	OutputModes  []string          `yaml:"output-modes"`
+	Thinking     *ThinkingMetadata `yaml:"thinking"`
+}
+
 type Config struct {
-	BaseURL          string
-	CatalogURL       string
-	ModelPrefix      ModelPrefix
-	APIKeys          []APIKey
-	Catalog          Catalog
-	Protocols        Protocols
-	RouteOverrides   map[string]RouteOverride
-	AllowHTTP        bool
-	RequestTimeout   time.Duration
-	MaxResponseBytes int64
+	BaseURL                string
+	CatalogURL             string
+	ModelPrefix            ModelPrefix
+	APIKeys                []APIKey
+	Catalog                Catalog
+	Protocols              Protocols
+	RouteOverrides         map[string]RouteOverride
+	ModelMetadataOverrides map[string]ModelMetadataOverride
+	AllowHTTP              bool
+	RequestTimeout         time.Duration
+	MaxResponseBytes       int64
 }
 
 // rawConfig mirrors the YAML shape; pointer fields distinguish "unset"
 // (apply default) from explicitly-set values including "" (validate as-is).
 // Unknown fields are ignored (host may pass extra keys).
 type rawConfig struct {
-	BaseURL          *string                  `yaml:"base-url"`
-	CatalogURL       *string                  `yaml:"catalog-url"`
-	ModelPrefix      rawPrefix                `yaml:"model-prefix"`
-	APIKeys          []rawKey                 `yaml:"api-keys"`
-	Catalog          rawCatalog               `yaml:"catalog"`
-	Protocols        rawProtocols             `yaml:"protocols"`
-	RouteOverrides   map[string]RouteOverride `yaml:"route-overrides"`
-	AllowHTTP        bool                     `yaml:"allow-http"`
-	RequestTimeout   *string                  `yaml:"request-timeout"`
-	MaxResponseBytes *int64                   `yaml:"max-response-bytes"`
+	BaseURL                *string                          `yaml:"base-url"`
+	CatalogURL             *string                          `yaml:"catalog-url"`
+	ModelPrefix            rawPrefix                        `yaml:"model-prefix"`
+	APIKeys                []rawKey                         `yaml:"api-keys"`
+	Catalog                rawCatalog                       `yaml:"catalog"`
+	Protocols              rawProtocols                     `yaml:"protocols"`
+	RouteOverrides         map[string]RouteOverride         `yaml:"route-overrides"`
+	ModelMetadataOverrides map[string]ModelMetadataOverride `yaml:"model-metadata-overrides"`
+	AllowHTTP              bool                             `yaml:"allow-http"`
+	RequestTimeout         *string                          `yaml:"request-timeout"`
+	MaxResponseBytes       *int64                           `yaml:"max-response-bytes"`
 }
 
 type rawPrefix struct {
@@ -143,10 +161,11 @@ func Load(yamlBytes []byte) (Config, error) {
 			Messages:        orDefault(raw.Protocols.Messages, true),
 			Responses:       orDefault(raw.Protocols.Responses, true),
 		},
-		RouteOverrides:   raw.RouteOverrides,
-		AllowHTTP:        raw.AllowHTTP,
-		RequestTimeout:   requestTimeout,
-		MaxResponseBytes: orDefault(raw.MaxResponseBytes, DefaultMaxResponseBytes),
+		RouteOverrides:         raw.RouteOverrides,
+		ModelMetadataOverrides: raw.ModelMetadataOverrides,
+		AllowHTTP:              raw.AllowHTTP,
+		RequestTimeout:         requestTimeout,
+		MaxResponseBytes:       orDefault(raw.MaxResponseBytes, DefaultMaxResponseBytes),
 	}
 	if raw.CatalogURL != nil {
 		// Mirror the derived-default trim so an explicit trailing-slash
@@ -206,6 +225,19 @@ func (c Config) validate() error {
 		}
 		if !strings.HasPrefix(o.Endpoint, "/") {
 			return fmt.Errorf("route-overrides[%s].endpoint: must start with /", name)
+		}
+	}
+	for name, o := range c.ModelMetadataOverrides {
+		if o.ContextLimit != nil && *o.ContextLimit < 0 || o.OutputLimit != nil && *o.OutputLimit < 0 {
+			return fmt.Errorf("model-metadata-overrides[%s]: limits must not be negative", name)
+		}
+		if o.Thinking != nil {
+			if o.Thinking.Min != nil && *o.Thinking.Min < 0 || o.Thinking.Max != nil && *o.Thinking.Max < 0 {
+				return fmt.Errorf("model-metadata-overrides[%s].thinking: bounds must not be negative", name)
+			}
+			if o.Thinking.Min != nil && o.Thinking.Max != nil && *o.Thinking.Max > 0 && *o.Thinking.Min > *o.Thinking.Max {
+				return fmt.Errorf("model-metadata-overrides[%s].thinking: min exceeds max", name)
+			}
 		}
 	}
 	if c.ModelPrefix.Enabled && !validPrefix(c.ModelPrefix.Value) {

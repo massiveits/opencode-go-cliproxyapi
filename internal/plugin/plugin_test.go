@@ -426,7 +426,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 		t.Fatalf("schema_version = %d, want %d", reg.SchemaVersion, pluginabi.SchemaVersion)
 	}
 	if reg.Metadata.Name != "opencode-go-cliproxyapi" || reg.Metadata.Version != pluginVersion ||
-		len(reg.Metadata.ConfigFields) != 10 {
+		len(reg.Metadata.ConfigFields) != 11 {
 		t.Fatalf("metadata wrong: %+v", reg.Metadata)
 	}
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider {
@@ -434,8 +434,8 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	}
 
 	calls := f.callsOf(pluginabi.MethodHostHTTPDo)
-	if len(calls) != 1 {
-		t.Fatalf("host.http.do calls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("host.http.do calls = %d, want catalog and models.dev", len(calls))
 	}
 	var wire map[string]any
 	if err := json.Unmarshal(calls[0].payload, &wire); err != nil {
@@ -494,6 +494,7 @@ func TestRegistrationConfigFields(t *testing.T) {
 		{"catalog", pluginapi.ConfigFieldTypeObject},
 		{"protocols", pluginapi.ConfigFieldTypeObject},
 		{"route-overrides", pluginapi.ConfigFieldTypeObject},
+		{"model-metadata-overrides", pluginapi.ConfigFieldTypeObject},
 		{"request-timeout", pluginapi.ConfigFieldTypeString},
 		{"max-response-bytes", pluginapi.ConfigFieldTypeInteger},
 		{"allow-http", pluginapi.ConfigFieldTypeBoolean},
@@ -766,8 +767,8 @@ func TestRegisterRefreshesWithConfiguredBearer(t *testing.T) {
 		t.Fatalf("register rejected: %s", resp)
 	}
 	calls := f.callsOf(pluginabi.MethodHostHTTPDo)
-	if len(calls) != 1 {
-		t.Fatalf("host.http.do calls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("host.http.do calls = %d, want catalog and models.dev", len(calls))
 	}
 	var wire map[string]any
 	if err := json.Unmarshal(calls[0].payload, &wire); err != nil {
@@ -776,6 +777,12 @@ func TestRegisterRefreshesWithConfiguredBearer(t *testing.T) {
 	headers := wire["headers"].(map[string]any)
 	if headers["Authorization"].([]any)[0].(string) != "Bearer "+dummyKey {
 		t.Fatalf("expected configured bearer key, got %v", headers)
+	}
+	if err := json.Unmarshal(calls[1].payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["url"] != "https://models.dev/api.json" || wire["headers"].(map[string]any)["Authorization"] != nil {
+		t.Fatalf("models.dev request must be public: %v", wire)
 	}
 }
 

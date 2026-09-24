@@ -19,15 +19,20 @@ const testKey = "sk-test-key-123"
 
 // fakeClient is a canned, thread-safe HostClient capturing the last request.
 type fakeClient struct {
-	mu     sync.Mutex
-	resp   pluginapi.HTTPResponse
-	err    error
-	gotReq *pluginapi.HTTPRequest
+	mu           sync.Mutex
+	resp         pluginapi.HTTPResponse
+	err          error
+	gotReq       *pluginapi.HTTPRequest
+	metadataResp pluginapi.HTTPResponse
+	metadataErr  error
 }
 
 func (f *fakeClient) Do(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if req.URL == modelsDevURL {
+		return f.metadataResp, f.metadataErr
+	}
 	f.gotReq = &req
 	return f.resp, f.err
 }
@@ -68,6 +73,59 @@ func findModel(t *testing.T, models []ModelRecord, upstreamID string) ModelRecor
 	}
 	t.Fatalf("model %q not found in %+v", upstreamID, models)
 	return ModelRecord{}
+}
+
+func TestMetadataPrecedenceAndAvailability(t *testing.T) {
+	output := int64(900)
+	zero := false
+	cfg := testCfg()
+	cfg.ModelMetadataOverrides = map[string]config.ModelMetadataOverride{
+		"gpt-5.6-luna": {
+			OutputLimit: &output,
+			Thinking:    &config.ThinkingMetadata{ZeroAllowed: &zero, Levels: []string{"max"}},
+		},
+	}
+	fc := &fakeClient{
+		resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[
+			{"id":"gpt-5.6-luna","context_length":42,"thinking":{"levels":["high"]}},
+			{"id":"glm-5.2"},{"id":"qwen3.8-max"}]}`)},
+		metadataResp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"opencode-go":{"models":{
+			"gpt-5.6-luna":{"limit":{"context":100,"output":200},"modalities":{"input":["text","image"],"output":["text"]},"reasoning_options":[{"type":"effort","values":["none","low","xhigh"]}]},
+			"glm-5.2":{"limit":{"context":300,"output":400},"reasoning_options":[{"type":"effort","values":["high","max"]}]},
+			"qwen3.8-max":{"reasoning_options":[{"type":"toggle"},{"type":"budget_tokens","min":1024,"max":32768},{"type":"effort","values":["low","xhigh"]}]},
+			"gpt-undiscovered":{"reasoning_options":[{"type":"effort","values":["max"]}]}
+		}}}`)},
+	}
+	m := New(cfg, fc)
+	mustRefresh(t, m)
+	if len(m.Models()) != 3 {
+		t.Fatalf("models.dev must not add routable models: %+v", m.Models())
+	}
+	gpt := findModel(t, m.Models(), "gpt-5.6-luna")
+	if gpt.ContextLimit != 42 || gpt.OutputLimit != 900 || !reflect.DeepEqual(gpt.InputModes, []string{"text", "image"}) ||
+		gpt.Thinking == nil || !reflect.DeepEqual(gpt.Thinking.Levels, []string{"max"}) || gpt.Thinking.ZeroAllowed {
+		t.Fatalf("metadata precedence failed: %+v", gpt)
+	}
+	glm := findModel(t, m.Models(), "glm-5.2")
+	if glm.ContextLimit != 300 || glm.OutputLimit != 400 || glm.Thinking == nil ||
+		!reflect.DeepEqual(glm.Thinking.Levels, []string{"high", "max"}) {
+		t.Fatalf("models.dev fallback failed: %+v", glm)
+	}
+	qwen := findModel(t, m.Models(), "qwen3.8-max")
+	if qwen.Thinking == nil || qwen.Thinking.Min != 1024 || qwen.Thinking.Max != 32768 ||
+		!reflect.DeepEqual(qwen.Thinking.Levels, []string{"low", "xhigh"}) {
+		t.Fatalf("reasoning options mapping failed: %+v", qwen)
+	}
+	fc.metadataResp = pluginapi.HTTPResponse{StatusCode: 503}
+	mustRefresh(t, m)
+	if got := findModel(t, m.Models(), "glm-5.2").Thinking; got == nil || !reflect.DeepEqual(got.Levels, []string{"high", "max"}) {
+		t.Fatalf("lost last good metadata during outage: %+v", got)
+	}
+	seeded := New(testCfg(), &fakeClient{})
+	seeded.SeedFrom(m)
+	if got := findModel(t, seeded.Models(), "gpt-5.6-luna"); got.OutputLimit != 200 || !reflect.DeepEqual(got.Thinking.Levels, []string{"high"}) {
+		t.Fatalf("seed must reapply new config with cached metadata: %+v", got)
+	}
 }
 
 func TestRouteEndpointPath(t *testing.T) {

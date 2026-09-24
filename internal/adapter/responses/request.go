@@ -12,7 +12,6 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -38,7 +37,40 @@ var EndpointPath = catalog.RouteResponses.EndpointPath()
 func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "openai-response":
-		return shared.RewriteModelID(upstreamModel, sourceBody, "openai-response")
+		body, eErr := shared.RewriteModelID(upstreamModel, sourceBody, "openai-response")
+		if eErr != nil {
+			return nil, eErr
+		}
+		var req map[string]json.RawMessage
+		_ = json.Unmarshal(body, &req)
+		var reasoning map[string]json.RawMessage
+		if len(req["reasoning"]) == 0 || string(req["reasoning"]) == "null" {
+			return body, nil
+		}
+		if json.Unmarshal(req["reasoning"], &reasoning) != nil || reasoning == nil {
+			return nil, errclass.Translation("reasoning must be an object")
+		}
+		if raw := reasoning["effort"]; len(raw) > 0 && string(raw) != "null" {
+			var effort string
+			if json.Unmarshal(raw, &effort) != nil {
+				return nil, errclass.Translation("reasoning.effort must be a string")
+			}
+			if effort != "" {
+				if eErr := thinking.ValidateEffort(effort, ts); eErr != nil {
+					return nil, eErr
+				}
+			}
+			if strings.EqualFold(strings.TrimSpace(effort), "auto") {
+				delete(reasoning, "effort")
+				if len(reasoning) == 0 {
+					delete(req, "reasoning")
+				} else {
+					req["reasoning"], _ = json.Marshal(reasoning)
+				}
+				body, _ = json.Marshal(req)
+			}
+		}
+		return body, nil
 	case "openai":
 		return fromChatCompletions(upstreamModel, sourceBody, ts)
 	case "claude":
@@ -276,10 +308,7 @@ func reasoningEffortFor(effort string, ts *pluginapi.ThinkingSupport) (string, b
 	case effort == "auto":
 		return "", false
 	case effort == "none":
-		if slices.Contains(thinking.SupportedLevels(ts), "none") {
-			return effort, true
-		}
-		return "", false
+		return effort, true // ValidateEffort admits it only when the model supports off.
 	default:
 		return effort, true
 	}

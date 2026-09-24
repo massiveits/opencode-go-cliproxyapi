@@ -206,6 +206,11 @@ func pluginConfigFields() []pluginapi.ConfigField {
 			Description: "Explicit route overrides per model (`<model-id>: {protocol: string, endpoint: string}`).",
 		},
 		{
+			Name:        "model-metadata-overrides",
+			Type:        pluginapi.ConfigFieldTypeObject,
+			Description: "Per-model capability overrides (thinking, limits, input-modes, output-modes).",
+		},
+		{
 			Name:        "request-timeout",
 			Type:        pluginapi.ConfigFieldTypeString,
 			Description: "Upstream HTTP request timeout (default: 5m).",

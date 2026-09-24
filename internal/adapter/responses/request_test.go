@@ -683,16 +683,14 @@ func TestFromChatCompletionsEffortCapability(t *testing.T) {
 	}
 }
 
-// Sentinels are capability-gated: a "none" the model does not declare and
-// the dynamic "auto" sentinel are omitted — Responses has no off-switch, so
-// omission is the no-forced-reasoning policy (matches the Messages-target
-// leg); declared levels forward.
-func TestFromChatCompletionsEffortSentinelsOmitted(t *testing.T) {
+// ZeroAllowed admits an off state even when Levels omits "none"; auto has
+// no Responses wire value and is omitted.
+func TestFromChatCompletionsEffortSentinels(t *testing.T) {
 	ts := &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true}
 	m := decodeReq(t, mustBuild(t, "m", "openai",
 		[]byte(`{"messages":[],"reasoning_effort":"none"}`), ts))
-	if _, has := m["reasoning"]; has {
-		t.Fatalf("none must omit reasoning: %v", m["reasoning"])
+	if r := m["reasoning"].(map[string]any); r["effort"] != "none" {
+		t.Fatalf("none must forward: %v", r)
 	}
 
 	m = decodeReq(t, mustBuild(t, "m", "openai",

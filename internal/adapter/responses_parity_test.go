@@ -8,11 +8,93 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+
 	"opencode-go-cliproxyapi/internal/adapter/chatcompletions"
 	"opencode-go-cliproxyapi/internal/adapter/messages"
 	"opencode-go-cliproxyapi/internal/adapter/responses"
 	"opencode-go-cliproxyapi/internal/errclass"
 )
+
+func TestReasoningEffortNativeAndTranslatedParity(t *testing.T) {
+	ts := &pluginapi.ThinkingSupport{Levels: []string{"minimal", "low", "medium", "high", "xhigh", "max"}, ZeroAllowed: true, DynamicAllowed: true}
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "auto"} {
+		t.Run(effort, func(t *testing.T) {
+			cc := []byte(`{"model":"m","messages":[],"reasoning_effort":"` + effort + `"}`)
+			resp := []byte(`{"model":"m","input":[],"reasoning":{"effort":"` + effort + `"}}`)
+			for _, tc := range []struct {
+				name   string
+				build  func(string, string, []byte, *pluginapi.ThinkingSupport) ([]byte, *errclass.Error)
+				format string
+				body   []byte
+				field  string
+			}{
+				{"native chat", chatcompletions.BuildRequest, "openai", cc, "reasoning_effort"},
+				{"translated chat", chatcompletions.BuildRequest, "openai-response", resp, "reasoning_effort"},
+				{"native responses", responses.BuildRequest, "openai-response", resp, "reasoning"},
+				{"translated responses", responses.BuildRequest, "openai", cc, "reasoning"},
+			} {
+				out, eErr := tc.build("m", tc.format, tc.body, ts)
+				if eErr != nil {
+					t.Fatalf("%s: %v", tc.name, eErr)
+				}
+				var wire map[string]any
+				if err := json.Unmarshal(out, &wire); err != nil {
+					t.Fatal(err)
+				}
+				if tc.field == "reasoning_effort" && wire[tc.field] != effort {
+					t.Errorf("%s: %s = %v", tc.name, tc.field, wire[tc.field])
+				}
+				if tc.field == "reasoning" {
+					if effort == "auto" && wire[tc.field] != nil {
+						t.Errorf("%s: auto must omit Responses reasoning: %v", tc.name, wire[tc.field])
+					} else if effort != "auto" {
+						got, ok := wire[tc.field].(map[string]any)
+						if !ok || got["effort"] != effort {
+							t.Errorf("%s: reasoning = %v", tc.name, wire[tc.field])
+						}
+					}
+				}
+			}
+			for _, source := range []struct {
+				format string
+				body   []byte
+			}{{"openai", cc}, {"openai-response", resp}} {
+				out, eErr := messages.BuildRequest("m", source.format, source.body, ts)
+				if eErr != nil {
+					t.Fatalf("Messages from %s: %v", source.format, eErr)
+				}
+				var wire map[string]any
+				if err := json.Unmarshal(out, &wire); err != nil {
+					t.Fatal(err)
+				}
+				if (wire["thinking"] != nil) != (effort != "none" && effort != "auto") {
+					t.Errorf("Messages from %s: thinking = %v", source.format, wire["thinking"])
+				}
+			}
+		})
+	}
+	limited := &pluginapi.ThinkingSupport{Levels: []string{"high"}}
+	for _, body := range []struct {
+		format string
+		data   []byte
+		build  func(string, string, []byte, *pluginapi.ThinkingSupport) ([]byte, *errclass.Error)
+	}{
+		{"openai", []byte(`{"model":"m","reasoning_effort":"max"}`), chatcompletions.BuildRequest},
+		{"openai-response", []byte(`{"model":"m","reasoning":{"effort":"max"}}`), responses.BuildRequest},
+	} {
+		if _, eErr := body.build("m", body.format, body.data, limited); eErr == nil || eErr.Class != errclass.ClassUnsupported {
+			t.Errorf("native %s accepted unsupported max: %v", body.format, eErr)
+		}
+	}
+	claudeOff := []byte(`{"model":"m","max_tokens":1024,"messages":[],"thinking":{"type":"disabled"}}`)
+	if _, eErr := messages.BuildRequest("m", "claude", claudeOff, limited); eErr == nil || eErr.Class != errclass.ClassUnsupported {
+		t.Errorf("native Messages accepted unsupported reasoning off: %v", eErr)
+	}
+	if _, eErr := messages.BuildRequest("m", "claude", claudeOff, ts); eErr != nil {
+		t.Errorf("native Messages rejected supported reasoning off: %v", eErr)
+	}
+}
 
 type feeder interface {
 	Feed(chunk []byte) (events [][]byte, done bool, eErr *errclass.Error)

@@ -1116,8 +1116,15 @@ func TestNoKeyLeakageE2E(t *testing.T) {
 			}
 			headers, _ := wire["headers"].(map[string]any)
 			auth, _ := headers["Authorization"].([]any)
-			authVal, _ := auth[0].(string)
-			foundInHeaders := strings.Contains(authVal, "sk-test-")
+			foundInHeaders := false
+			if len(auth) == 0 {
+				if wire["url"] != "https://models.dev/api.json" {
+					t.Fatalf("unexpected unauthenticated request: %v", wire["url"])
+				}
+			} else {
+				authVal, _ := auth[0].(string)
+				foundInHeaders = strings.Contains(authVal, "sk-test-")
+			}
 			delete(wire, "headers")
 			rest, _ := json.Marshal(wire)
 			for _, k := range keys {

@@ -56,6 +56,14 @@ type messagesRequest struct {
 func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "claude":
+		var native struct {
+			Thinking *shared.ClaudeThinking `json:"thinking"`
+		}
+		if json.Unmarshal(sourceBody, &native) == nil && native.Thinking != nil && native.Thinking.Type == "disabled" {
+			if eErr := thinking.ValidateEffort("none", ts); eErr != nil {
+				return nil, eErr
+			}
+		}
 		return shared.RewriteModelID(upstreamModel, sourceBody, "claude")
 	case "openai":
 		return fromChatCompletions(upstreamModel, sourceBody, ts)

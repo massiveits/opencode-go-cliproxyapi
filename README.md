@@ -101,6 +101,13 @@ plugins:
           protocol: "messages"           # "chat-completions" | "messages" | "responses"
           endpoint: "/v1/messages"       # must start with /
 
+      # Optional per-model capability fixes (takes priority over catalog and models.dev)
+      model-metadata-overrides:
+        "gpt-5.6-luna":
+          thinking:
+            zero-allowed: true
+            levels: [none, low, medium, high, xhigh, max]
+
       # Execution settings
       request-timeout: "5m"              # upstream request timeout (default: "5m")
       max-response-bytes: 67108864       # max non-streaming response body size in bytes (default: 64 MiB)
@@ -108,6 +115,8 @@ plugins:
 ```
 
 ### Configuration Options
+
+The configured `catalog-url` alone determines which models are routable. On each successful discovery, the plugin fills missing limits, modalities, and unambiguous reasoning metadata from the `opencode-go` provider in [models.dev](https://models.dev/); if that request fails, the last good metadata is retained. Field priority is: `model-metadata-overrides` > catalog > models.dev > plugin defaults. `toggle` reasoning options are not inferred as effort levels.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -122,6 +131,7 @@ plugins:
 | `protocols.messages` | `bool` | `true` | Protocol switch for Messages endpoints. |
 | `protocols.responses` | `bool` | `true` | Protocol switch for Responses endpoints. |
 | `route-overrides` | `map` | `{}` | Map of model ID to `{ protocol: "...", endpoint: "..." }` overriding built-in family routing. Valid protocols: `chat-completions`, `messages`, `responses`. |
+| `model-metadata-overrides` | `map` | `{}` | Per-model `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`), `context-limit`, `output-limit`, `input-modes`, and `output-modes`. Each supplied field overrides the catalog and models.dev; unspecified fields retain their current value. |
 | `request-timeout` | `duration` | `5m` | Upstream HTTP request timeout. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` scheme in `base-url` / `catalog-url` for local testing. |

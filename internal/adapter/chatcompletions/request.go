@@ -38,7 +38,7 @@ func AuthHeaders(key string) http.Header {
 func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "openai":
-		return buildOpenAIRequest(upstreamModel, sourceBody)
+		return buildOpenAIRequest(upstreamModel, sourceBody, ts)
 	case "claude":
 		return claudeToChat(upstreamModel, sourceBody, ts)
 	case "openai-response":
@@ -52,13 +52,24 @@ func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *plu
 // body to upstreamModel, normalizes role:"developer" messages to role:"system",
 // and strips any malformed top-level thinking object. DeepSeek models fail if
 // thinking lacks a valid string type field or if messages contain role:"developer".
-func buildOpenAIRequest(upstreamModel string, body []byte) ([]byte, *errclass.Error) {
+func buildOpenAIRequest(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
 	var req map[string]json.RawMessage
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, errclass.Translation("malformed openai request JSON: " + err.Error())
 	}
 	if req == nil {
 		return nil, errclass.Translation("malformed request body: JSON null is not a valid request")
+	}
+	if raw := req["reasoning_effort"]; len(raw) > 0 && string(raw) != "null" {
+		var effort string
+		if json.Unmarshal(raw, &effort) != nil {
+			return nil, errclass.Translation("reasoning_effort must be a string")
+		}
+		if effort != "" {
+			if eErr := thinking.ValidateEffort(effort, ts); eErr != nil {
+				return nil, eErr
+			}
+		}
 	}
 	rawThinking, hasThinking := req["thinking"]
 	validThinking := hasThinking && isValidThinking(rawThinking)

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 
@@ -28,6 +29,7 @@ import (
 // completion bodies, so the fetch budget never drops below 16 MiB while
 // max-response-bytes stays meaningful for completions elsewhere.
 const catalogBudgetFloor = 16 << 20
+const modelsDevURL = "https://models.dev/api.json"
 
 // Route is the upstream protocol a model is served through (FR-004).
 type Route string
@@ -114,6 +116,23 @@ type rawThinking struct {
 	Levels         []string `json:"levels"`
 }
 
+type modelsDevModel struct {
+	Limit struct {
+		Context int64 `json:"context"`
+		Output  int64 `json:"output"`
+	} `json:"limit"`
+	Modalities struct {
+		Input  []string `json:"input"`
+		Output []string `json:"output"`
+	} `json:"modalities"`
+	ReasoningOptions []struct {
+		Type   string   `json:"type"`
+		Values []string `json:"values"`
+		Min    *int     `json:"min"`
+		Max    *int     `json:"max"`
+	} `json:"reasoning_options"`
+}
+
 // prefixRoutes covers unknown variants of known families;
 // longest prefix wins (list is ordered longest-first).
 var prefixRoutes = []struct {
@@ -144,8 +163,9 @@ type Manager struct {
 	// so SeedFrom can rebuild records against a NEW config (route overrides,
 	// protocol flags, and prefix settings may all have changed since the
 	// snapshot was built).
-	raw    []rawModel
-	models []ModelRecord
+	raw      []rawModel
+	metadata map[string]modelsDevModel
+	models   []ModelRecord
 	// index maps both PublicID and UpstreamID to their record so ID
 	// resolution is O(1); rebuilt atomically with models on every swap.
 	index map[string]ModelRecord
@@ -175,8 +195,9 @@ func New(cfg config.Config, client HostClient) *Manager {
 func (m *Manager) SeedFrom(prev *Manager) {
 	prev.mu.Lock()
 	raw := prev.raw
+	metadata := prev.metadata
 	prev.mu.Unlock()
-	m.swap(raw)
+	m.swap(raw, metadata)
 }
 
 // Refresh fetches and swaps the catalog snapshot. On failure it returns a
@@ -225,8 +246,41 @@ func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 	} else if err := json.Unmarshal(env.Data, &entries); err != nil {
 		return m.fail("invalid json")
 	}
-	m.swap(entries, warns...)
+	var metadata map[string]modelsDevModel
+	if len(entries) > 0 {
+		metadata = m.fetchMetadata(ctx)
+	}
+	m.mu.Lock()
+	if metadata == nil {
+		metadata = m.metadata // models.dev is advisory; retain the last good metadata.
+	}
+	m.mu.Unlock()
+	m.swap(entries, metadata, warns...)
 	return nil
+}
+
+func (m *Manager) fetchMetadata(ctx context.Context) map[string]modelsDevModel {
+	// ponytail: fetch the full API until models.dev exposes a provider-only endpoint.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	resp, err := m.client.Do(ctx, pluginapi.HTTPRequest{
+		Method: http.MethodGet, URL: modelsDevURL,
+		Headers: http.Header{"Accept": []string{"application/json"}},
+	})
+	if err != nil || resp.StatusCode != http.StatusOK || len(resp.Body) > catalogBudgetFloor {
+		return nil
+	}
+	var root map[string]json.RawMessage
+	if json.Unmarshal(resp.Body, &root) != nil {
+		return nil
+	}
+	var provider struct {
+		Models map[string]modelsDevModel `json:"models"`
+	}
+	if json.Unmarshal(root["opencode-go"], &provider) != nil || len(provider.Models) == 0 {
+		return nil
+	}
+	return provider.Models
 }
 
 // fail applies the stale policy and returns the classified error.
@@ -237,7 +291,7 @@ func (m *Manager) fail(category string) error {
 		// Clear the index too — Lookup must stop resolving IDs whose
 		// records are gone (FR-002). Raw entries go with them: a cleared
 		// snapshot has nothing to seed.
-		m.raw, m.models, m.index, m.unsup, m.warns = nil, nil, nil, nil, nil
+		m.raw, m.metadata, m.models, m.index, m.unsup, m.warns = nil, nil, nil, nil, nil, nil
 	}
 	return fmt.Errorf("catalog refresh failed: %s", category)
 }
@@ -246,7 +300,7 @@ func (m *Manager) fail(category string) error {
 // atomically under the mutex (FR-010 dedup, arch §5 route priority).
 // extraWarns are caller-supplied snapshot diagnostics (e.g. decode-level
 // shape-drift notices) recorded alongside the per-entry ones.
-func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
+func (m *Manager) swap(entries []rawModel, metadata map[string]modelsDevModel, extraWarns ...string) {
 	models := make([]ModelRecord, 0, len(entries))
 	index := make(map[string]ModelRecord, len(entries)*2)
 	var unsup []UnsupportedModel
@@ -315,6 +369,7 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			OutputModes:  outputModes,
 			Thinking:     normalizeThinking(e.Thinking),
 		}
+		applyMetadata(&rec, e, metadata[e.ID], m.cfg.ModelMetadataOverrides[e.ID])
 		// With a prefix enabled, one record's PublicID can equal another
 		// record's UpstreamID (upstream "foo" and "opencode-go/foo" both
 		// claim index key "<prefix>/foo"); last-write-wins would silently
@@ -341,7 +396,91 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.raw, m.models, m.index, m.unsup, m.warns = entries, models, index, unsup, warns
+	m.raw, m.metadata, m.models, m.index, m.unsup, m.warns = entries, metadata, models, index, unsup, warns
+}
+
+func applyMetadata(rec *ModelRecord, catalog rawModel, dev modelsDevModel, override config.ModelMetadataOverride) {
+	if rec.ContextLimit == 0 {
+		rec.ContextLimit = dev.Limit.Context
+	}
+	if rec.OutputLimit == 0 {
+		rec.OutputLimit = dev.Limit.Output
+	}
+	if len(rec.InputModes) == 0 {
+		rec.InputModes = dev.Modalities.Input
+	}
+	if len(rec.OutputModes) == 0 {
+		rec.OutputModes = dev.Modalities.Output
+	}
+	var derived *rawThinking
+	for _, option := range dev.ReasoningOptions {
+		switch option.Type {
+		case "effort":
+			if derived == nil {
+				derived = &rawThinking{}
+			}
+			derived.Levels = append(derived.Levels, option.Values...)
+			for _, level := range option.Values {
+				if strings.EqualFold(level, "none") {
+					b := true
+					derived.ZeroAllowed = &b
+				}
+			}
+		case "budget_tokens":
+			if derived == nil {
+				derived = &rawThinking{}
+			}
+			derived.Min, derived.Max = option.Min, option.Max
+		}
+	}
+	thinking := mergeThinking(derived, catalog.Thinking)
+	if o := override.Thinking; o != nil {
+		thinking = mergeThinking(thinking, &rawThinking{
+			Min: o.Min, Max: o.Max, ZeroAllowed: o.ZeroAllowed,
+			DynamicAllowed: o.DynamicAllowed, Levels: o.Levels,
+		})
+	}
+	rec.Thinking = normalizeThinking(thinking)
+	if override.ContextLimit != nil {
+		rec.ContextLimit = *override.ContextLimit
+	}
+	if override.OutputLimit != nil {
+		rec.OutputLimit = *override.OutputLimit
+	}
+	if override.InputModes != nil {
+		rec.InputModes = override.InputModes
+	}
+	if override.OutputModes != nil {
+		rec.OutputModes = override.OutputModes
+	}
+}
+
+func mergeThinking(base, layer *rawThinking) *rawThinking {
+	if layer == nil {
+		return base
+	}
+	if base == nil {
+		base = &rawThinking{}
+	} else {
+		copy := *base
+		base = &copy
+	}
+	if layer.Min != nil {
+		base.Min = layer.Min
+	}
+	if layer.Max != nil {
+		base.Max = layer.Max
+	}
+	if layer.ZeroAllowed != nil {
+		base.ZeroAllowed = layer.ZeroAllowed
+	}
+	if layer.DynamicAllowed != nil {
+		base.DynamicAllowed = layer.DynamicAllowed
+	}
+	if layer.Levels != nil {
+		base.Levels = layer.Levels
+	}
+	return base
 }
 
 // protocolEnabled reports whether the resolved route's protocol flag is on

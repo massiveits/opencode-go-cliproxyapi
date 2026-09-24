@@ -20,6 +20,27 @@ func requireErrContains(t *testing.T, err error, want string) {
 // that target a later validation check.
 const withKey = "api-keys:\n  - value: sk-dummy\n"
 
+func TestModelMetadataOverrides(t *testing.T) {
+	c, err := Load([]byte(withKey + `model-metadata-overrides:
+  gpt-5.6-luna:
+    context-limit: 100
+    input-modes: [text, image]
+    thinking:
+      zero-allowed: false
+      levels: [none, max]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := c.ModelMetadataOverrides["gpt-5.6-luna"]
+	if o.ContextLimit == nil || *o.ContextLimit != 100 || len(o.InputModes) != 2 || o.Thinking == nil ||
+		o.Thinking.ZeroAllowed == nil || *o.Thinking.ZeroAllowed || len(o.Thinking.Levels) != 2 {
+		t.Fatalf("override decoded incorrectly: %+v", o)
+	}
+	_, err = Load([]byte(withKey + "model-metadata-overrides:\n  gpt-5.6-luna:\n    output-limit: -1\n"))
+	requireErrContains(t, err, "limits must not be negative")
+}
+
 func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	c, err := Load([]byte(withKey))
 	if err != nil {
