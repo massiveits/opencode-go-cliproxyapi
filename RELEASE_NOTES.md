@@ -1,18 +1,26 @@
 ## What's Changed
 
-### Features
+- Support CLIProxyAPI v8 and its generic plugin quota API.
+- Return rolling, weekly, and monthly quotas for the credential selected by CLIProxyAPI.
+- Advertise the quota provider as **OpenCode Go**.
+- Remove the separate OpenCode Go quota page and custom management routes.
+- Accept an optional `name` for each API key.
+- Use readable account labels and filenames instead of key digests.
+- Preserve existing auth IDs, custom labels, filenames, and host metadata.
+- Prevent duplicate auth records at cold start when readable filenames exist.
+- Reject invalid quota values and redact upstream request errors.
 
-- Expose `ConfigFields` in plugin registration metadata, enabling interactive configuration editing in CLIProxyAPI Management Center for all plugin settings (`api-keys`, `base-url`, `catalog-url`, `model-prefix`, `catalog`, `protocols`, `route-overrides`, `request-timeout`, `max-response-bytes`, `allow-http`).
-- Add "Refresh All" button in quota page.
+## Upgrade
 
-### Bug Fixes
+1. Upgrade CLIProxyAPI to v8.0.0 or later.
+2. Replace the plugin binary with the new build.
+3. Restart CLIProxyAPI.
 
-- Normalize `role: "developer"` to `role: "system"` in the chat-completions adapter, preventing DeepSeek-backed models from rejecting valid client requests with HTTP 400 ([#5](https://github.com/massiveits/opencode-go-cliproxyapi/issues/5)). Thanks to [@zlwu](https://github.com/zlwu).
+The generic endpoints are `GET /v0/management/quota/providers` and
+`POST /v0/management/quota/fetch`. Both require the management key.
+Quota reset is unsupported. A management dashboard must support the generic
+quota API to show plugin refresh controls. Backend support alone does not
+add those controls to older dashboard builds.
 
-## Upgrade Notes
-
-- Replace the old plugin binary with the new release binary.
-- Restart CLIProxyAPI after replacing the plugin.
-- Hard-refresh Management Center if the plugin page looks stale.
-
-**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.8...v0.1.9
+Existing credential files keep their names and stable IDs. Set `name:` on an
+API key to choose its display label. New files use readable names.

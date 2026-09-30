@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/catalog"
 	"opencode-go-cliproxyapi/internal/config"
@@ -41,7 +41,7 @@ type fakeCaller struct {
 	mu        sync.Mutex
 	calls     []capturedCall
 	responder func(method string, payload []byte) ([]byte, error)
-	authFiles map[string]struct{}
+	authFiles map[string]string
 }
 
 func (f *fakeCaller) call(method string, payload []byte) ([]byte, error) {
@@ -63,9 +63,13 @@ func (f *fakeCaller) call(method string, payload []byte) ([]byte, error) {
 		if json.Unmarshal(payload, &req) == nil && strings.TrimSpace(req.Name) != "" {
 			f.mu.Lock()
 			if f.authFiles == nil {
-				f.authFiles = make(map[string]struct{})
+				f.authFiles = make(map[string]string)
 			}
-			f.authFiles[req.Name] = struct{}{}
+			var record struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal(req.JSON, &record)
+			f.authFiles[req.Name] = record.ID
 			f.mu.Unlock()
 		}
 	}
@@ -93,9 +97,9 @@ func hasExplicitAuthList(raw []byte) bool {
 func (f *fakeCaller) authListResponse() []byte {
 	f.mu.Lock()
 	files := make([]pluginapi.HostAuthFileEntry, 0, len(f.authFiles))
-	for name := range f.authFiles {
+	for name, id := range f.authFiles {
 		files = append(files, pluginapi.HostAuthFileEntry{
-			ID: strings.TrimSuffix(name, ".json"), Name: name, Source: "file", Path: name,
+			ID: id, Name: name, Source: "file", Path: name,
 		})
 	}
 	f.mu.Unlock()
@@ -550,7 +554,7 @@ func TestLifecycleMaterializesDeterministicAuthRecords(t *testing.T) {
 		}
 		hash := sha256.Sum256([]byte(record.APIKey))
 		wantHash := hex.EncodeToString(hash[:])
-		if record.Type != ProviderID || record.ID != "opencode-go-key-"+wantHash || record.Label != "OpenCode Go credential "+wantHash || wire.Name != record.ID+".json" {
+		if record.Type != ProviderID || record.ID != "opencode-go-key-"+wantHash || !strings.HasPrefix(record.Label, "OpenCode Go ") || !strings.HasPrefix(wire.Name, "OpenCode-Go-") {
 			t.Fatalf("record identity = %+v name=%q", record, wire.Name)
 		}
 		if record.APIKey == "" || strings.Contains(wire.Name, record.APIKey) || strings.Contains(record.ID, record.APIKey) {

@@ -4,18 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"opencode-go-cliproxyapi/internal/config"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-type authProvider struct{}
+type authProvider struct{ cfg config.Config }
 
 var _ pluginapi.AuthProvider = authProvider{}
 
 func (authProvider) Identifier() string { return ProviderID }
 
-func (authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest) (pluginapi.AuthParseResponse, error) {
+func (p authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest) (pluginapi.AuthParseResponse, error) {
 	debugTrace("auth parse request provider=%s file=%s raw_bytes=%d", req.Provider, req.FileName, len(req.RawJSON))
 	var raw struct {
 		Type     string `json:"type"`
@@ -41,7 +42,7 @@ func (authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest)
 	}
 	debugTrace("auth parse handled provider=%s file=%s id=%s api_key_present=%t api_key_length=%d", req.Provider, req.FileName, raw.ID, strings.TrimSpace(raw.APIKey) != "", len(raw.APIKey))
 	return pluginapi.AuthParseResponse{Handled: true, Auth: pluginapi.AuthData{
-		Provider: ProviderID, ID: raw.ID, FileName: req.FileName, Label: raw.Label, StorageJSON: req.RawJSON,
+		Provider: ProviderID, ID: raw.ID, FileName: req.FileName, Label: accountLabel(p.cfg, raw.APIKey, raw.Label, 0), StorageJSON: req.RawJSON,
 		Attributes: map[string]string{"api_key": raw.APIKey},
 	}}, nil
 }
@@ -65,4 +66,26 @@ func mapKeys[T any](values map[string]T) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+// Labels are presentation only. Stable auth IDs and stored host metadata are preserved.
+func accountLabel(cfg config.Config, key, existing string, fallbackIndex int) string {
+	index := fallbackIndex
+	for i, entry := range cfg.APIKeys {
+		if entry.Value == key {
+			if name := strings.TrimSpace(entry.Name); name != "" {
+				return name
+			}
+			index = i
+			break
+		}
+	}
+	label := strings.TrimSpace(existing)
+	if label != "" && !strings.HasPrefix(label, "OpenCode Go credential ") && !strings.HasPrefix(label, "opencode-go-key-") {
+		return label
+	}
+	if len(cfg.APIKeys) > 1 {
+		return fmt.Sprintf("OpenCode Go %d", index+1)
+	}
+	return "OpenCode Go"
 }
