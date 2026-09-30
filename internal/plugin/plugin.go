@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/catalog"
 	"opencode-go-cliproxyapi/internal/config"
@@ -24,7 +27,7 @@ const ProviderID = "opencode-go"
 // pluginName / pluginVersion are reported in registration metadata.
 const (
 	pluginName    = "opencode-go-cliproxyapi"
-	pluginVersion = "0.1.9"
+	pluginVersion = "0.2.0"
 )
 
 // githubRepoURL satisfies the host's validPlugin gate (host.go
@@ -92,7 +95,10 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 		if json.Unmarshal(request, &req) != nil {
 			return ErrEnvelope("invalid_request", "malformed auth parse request body"), nil
 		}
-		resp, err := (authProvider{}).ParseAuth(context.Background(), req)
+		m.mu.RLock()
+		cfg := m.cfg
+		m.mu.RUnlock()
+		resp, err := (authProvider{cfg: cfg}).ParseAuth(context.Background(), req)
 		if err != nil {
 			return ErrEnvelope("auth_failure", err.Error()), nil
 		}
@@ -124,10 +130,22 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 			return ErrEnvelope("auth_failure", err.Error()), nil
 		}
 		return okEnvelope(resp), nil
-	case pluginabi.MethodManagementRegister:
-		return m.registerManagement(request)
-	case pluginabi.MethodManagementHandle:
-		return m.handleManagement(request)
+	case pluginabi.MethodQuotaIdentifier:
+		return okEnvelope(map[string]string{"identifier": ProviderID}), nil
+	case pluginabi.MethodQuotaDescribe:
+		return okEnvelope(pluginapi.QuotaDescribeResponse{SupportedProviders: []string{ProviderID}, DisplayName: "OpenCode Go"}), nil
+	case pluginabi.MethodQuotaFetch:
+		var req pluginapi.QuotaFetchRequest
+		if json.Unmarshal(request, &req) != nil {
+			return ErrEnvelope("invalid_request", "malformed quota request"), nil
+		}
+		result, err := m.FetchQuota(context.Background(), req)
+		if err != nil {
+			return ErrEnvelope("quota_failure", err.Error()), nil
+		}
+		return okEnvelope(result), nil
+	case pluginabi.MethodQuotaReset:
+		return ErrEnvelope("unsupported", "OpenCode Go does not support quota resets"), nil
 	case pluginabi.MethodExecutorIdentifier:
 		return okEnvelope(map[string]string{"identifier": ProviderID}), nil
 	case pluginabi.MethodExecutorCountTokens:
@@ -159,6 +177,7 @@ type capabilities struct {
 	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope,omitempty"`
 	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
+	QuotaProvider         bool                         `json:"quota_provider"`
 	ManagementAPI         bool                         `json:"management_api"`
 }
 
@@ -173,7 +192,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{
 			Name:        "api-keys",
 			Type:        pluginapi.ConfigFieldTypeArray,
-			Description: "List of OpenCode Go API keys (`- value: ...`). Supports ${ENV_VAR} expansion.",
+			Description: "List of OpenCode Go API keys (`- value: ...`, optional `name: Personal`). Supports ${ENV_VAR} expansion.",
 		},
 		{
 			Name:        "base-url",
@@ -241,56 +260,9 @@ func registrationEnvelope() []byte {
 			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats:  formats,
 			ExecutorOutputFormats: formats,
-			ManagementAPI:         true,
+			QuotaProvider:         true,
 		},
 	})
-}
-
-func (m *Manager) registerManagement(request []byte) ([]byte, error) {
-	var req struct {
-		Plugin           pluginapi.Metadata `json:"Plugin"`
-		BasePath         string             `json:"BasePath"`
-		ResourceBasePath string             `json:"ResourceBasePath"`
-	}
-	if err := json.Unmarshal(request, &req); err != nil {
-		return ErrEnvelope("invalid_request", "malformed management registration request body"), nil
-	}
-	return okEnvelope(struct {
-		Routes []struct {
-			Method string `json:"method"`
-			Path   string `json:"path"`
-		} `json:"routes"`
-		Resources []struct {
-			Path        string `json:"path"`
-			Menu        string `json:"menu"`
-			Description string `json:"description"`
-		} `json:"resources"`
-	}{
-		Routes: []struct {
-			Method string `json:"method"`
-			Path   string `json:"path"`
-		}{{Method: "POST", Path: "/plugins/" + pluginName + "/quota-usage"}},
-		Resources: []struct {
-			Path        string `json:"path"`
-			Menu        string `json:"menu"`
-			Description string `json:"description"`
-		}{{Path: "/quota", Menu: "OpenCode Go Quota", Description: "View OpenCode Go quota windows."}},
-	}), nil
-}
-
-func (m *Manager) handleManagement(request []byte) ([]byte, error) {
-	var req struct {
-		pluginapi.ManagementRequest
-		HostCallbackID string `json:"host_callback_id,omitempty"`
-	}
-	if err := json.Unmarshal(request, &req); err != nil {
-		return ErrEnvelope("invalid_request", "malformed management request body"), nil
-	}
-	resp, err := m.HandleManagement(context.Background(), req.ManagementRequest)
-	if err != nil {
-		return ErrEnvelope("management_failure", err.Error()), nil
-	}
-	return okEnvelope(resp), nil
 }
 
 // handleLifecycle implements plugin.register / plugin.reconfigure: load
@@ -372,6 +344,26 @@ func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config)
 	}
 	existing := make(map[string]struct{}, len(entries)*2)
 	for _, entry := range entries {
+		// Before the auth manager is ready, v8 lists disk files without IDs.
+		// Recover identity from those host-reported paths to avoid duplicates
+		// when a credential has a readable filename.
+		if (entry.Provider == ProviderID || entry.Type == ProviderID) && !strings.HasPrefix(entry.ID, "opencode-go-key-") {
+			if !filepath.IsAbs(entry.Path) {
+				return fmt.Errorf("existing auth record has no absolute path")
+			}
+			raw, err := os.ReadFile(entry.Path)
+			if err != nil {
+				return fmt.Errorf("cannot read existing plugin auth record")
+			}
+			var record struct {
+				APIKey string `json:"api_key"`
+			}
+			if json.Unmarshal(raw, &record) != nil || record.APIKey == "" {
+				return fmt.Errorf("existing plugin auth record is invalid")
+			}
+			digest := sha256.Sum256([]byte(record.APIKey))
+			existing["opencode-go-key-"+hex.EncodeToString(digest[:])] = struct{}{}
+		}
 		if name := strings.TrimSpace(entry.Name); name != "" {
 			existing[name] = struct{}{}
 		}
@@ -379,7 +371,7 @@ func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config)
 			existing[id] = struct{}{}
 		}
 	}
-	for _, key := range cfg.APIKeys {
+	for i, key := range cfg.APIKeys {
 		digest := sha256.Sum256([]byte(key.Value))
 		hash := hex.EncodeToString(digest[:])
 		id := "opencode-go-key-" + hash
@@ -390,13 +382,14 @@ func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config)
 		if _, ok := existing[name]; ok {
 			continue
 		}
+		name = availableAuthName(accountLabel(cfg, key.Value, "", i), existing)
 		record, err := json.Marshal(struct {
 			Type   string `json:"type"`
 			ID     string `json:"id"`
 			Label  string `json:"label"`
 			APIKey string `json:"api_key"`
 		}{
-			Type: "opencode-go", ID: id, Label: "OpenCode Go credential " + hash, APIKey: key.Value,
+			Type: "opencode-go", ID: id, Label: accountLabel(cfg, key.Value, "", i), APIKey: key.Value,
 		})
 		if err != nil {
 			return fmt.Errorf("build auth record")
@@ -570,4 +563,29 @@ func okEnvelope(result any) []byte {
 func ErrEnvelope(code, message string) []byte {
 	out, _ := json.Marshal(pluginabi.Envelope{OK: false, Error: &pluginabi.Error{Code: code, Message: message}})
 	return out
+}
+
+// Use a readable filename because management clients may show it instead of Label.
+func availableAuthName(label string, existing map[string]struct{}) string {
+	base := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, label)
+	base = strings.Trim(base, "-")
+	if base == "" {
+		base = "OpenCode-Go"
+	}
+	runes := []rune(base)
+	if len(runes) > 80 {
+		base = string(runes[:80])
+	}
+	name := base + ".json"
+	for n := 2; ; n++ {
+		if _, exists := existing[name]; !exists {
+			return name
+		}
+		name = fmt.Sprintf("%s-%d.json", base, n)
+	}
 }

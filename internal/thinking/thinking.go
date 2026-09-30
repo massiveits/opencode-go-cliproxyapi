@@ -1,6 +1,6 @@
 // Package thinking maps reasoning budgets to canonical effort levels that a
 // target model actually supports, so reasoning controls are never silently
-// lost (FR-005). Conversion core follows the pinned SDK v7.2.138 host tables
+// lost (FR-005). Conversion core follows the pinned SDK v8.0.0 host tables
 // (internal/thinking/convert.go): budget↔level is a fixed threshold mapping,
 // never proportional interpolation; the capability-aware layer then clamps
 // the derived standard level to the model's supported set.
@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/errclass"
 )
@@ -21,7 +21,7 @@ import (
 var CanonicalLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // levelBudgetTable ports the host's levelToBudgetMap verbatim
-// (SDK internal/thinking/convert.go @ v7.2.138): exact per-level budgets,
+// (SDK internal/thinking/convert.go @ v8.0.0): exact per-level budgets,
 // no interpolation.
 var levelBudgetTable = map[string]int64{
 	"minimal": 512,
@@ -33,7 +33,7 @@ var levelBudgetTable = map[string]int64{
 }
 
 // budgetToLevel ports the host's ConvertBudgetToLevel fixed thresholds
-// (SDK internal/thinking/convert.go @ v7.2.138: ThresholdMinimal/Low/Medium/
+// (SDK internal/thinking/convert.go @ v8.0.0: ThresholdMinimal/Low/Medium/
 // High = 512/1024/8192/24576): <=512 minimal, <=1024 low, <=8192 medium,
 // <=24576 high, else xhigh. Callers handle the -1→auto and 0→none sentinels;
 // "max" is never derived from a budget.
@@ -111,7 +111,7 @@ func EffortFromBudget(budget int64, ts *pluginapi.ThinkingSupport) string {
 // BudgetFromEffort maps a client-declared effort level to an Anthropic-style
 // budget_tokens value for models whose upstream protocol takes budgets
 // (FR-005), using the host levelToBudgetMap exact values (SDK
-// internal/thinking/convert.go @ v7.2.138) instead of interpolation. ok is
+// internal/thinking/convert.go @ v8.0.0) instead of interpolation. ok is
 // false when the effort cannot be represented for ts so callers raise an
 // explicit unsupported-class error instead of silently dropping the control.
 //

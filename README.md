@@ -31,12 +31,12 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - **Thinking & Reasoning Support**: Maps reasoning effort across supported client and upstream formats.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs with local fallback and custom route overrides.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
-- **OpenCode Go Quota Page**: Management Center includes a separate `OpenCode Go Quota` page. Page load lists credentials without contacting OpenCode; each card is refreshed manually and independently, and quota values do not affect routing or CPA's native quota page.
+- **Native quotas**: Rolling, weekly, and monthly quotas use CLIProxyAPI’s generic quota endpoints and the selected credential. The separate plugin page is removed.
 
 ## Requirements
 
-- **CLIProxyAPI**: `v7.2.138+`
-- **Go Toolchain**: Go 1.24+ (with CGO enabled for C-shared build mode)
+- **CLIProxyAPI**: `v8.0.0+`
+- **Go Toolchain**: Go 1.26.7+ (with CGO enabled for C-shared build mode)
 
 ## Build
 
@@ -81,6 +81,7 @@ plugins:
       # OpenCode Go API keys (at least one required). Supports ${ENV_VAR} expansion.
       api-keys:
         - value: "sk-opencode-key-1"
+          name: "Personal"      # optional account label
         - value: "sk-opencode-key-2"
         - value: "${OPENCODE_GO_API_KEY}"
 
@@ -111,7 +112,7 @@ plugins:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `api-keys` | `[]object` | *(Required)* | List of API keys (`- value: "..."`). Supports `${ENV_VAR}` expansion. Duplicates and empty values are rejected. |
+| `api-keys` | `[]object` | *(Required)* | List of API keys (`- value: "..."`, optional `name: "Personal"`). Supports `${ENV_VAR}` expansion. Duplicates and empty values are rejected. |
 | `base-url` | `string` | `https://opencode.ai/zen/go/v1` | Upstream base URL. Must be valid HTTPS (or HTTP if `allow-http: true`) without query parameters, fragments, or userinfo. |
 | `catalog-url` | `string` | `{base-url}/models` | Full URL for catalog discovery. Defaults to `{base-url}/models`. |
 | `model-prefix.enabled` | `bool` | `true` | When `true`, client-facing model names use `<prefix>/<model>`. When `false`, uses bare model IDs. |
@@ -138,3 +139,24 @@ go test ./... -cover
 # Run linter / vetting
 go vet ./...
 ```
+
+## Account names and quotas
+
+Set an optional `name` on each `api-keys` entry, alongside `value`.
+For example, use `name: Personal` or `name: Work`. Without a name, one key
+uses **OpenCode Go**; multiple keys use **OpenCode Go 1**, **OpenCode Go 2**, and subsequent numbers.
+Default numbers follow configuration order. Explicit names remain stable when keys are reordered.
+The usage response contains no email or account identity. The plugin does not infer an email from a key.
+
+New credential files have readable names. Existing auth IDs remain unchanged, and
+legacy generated labels are replaced when parsed. Existing custom labels are preserved
+unless configuration specifies a name. Existing filenames are retained automatically;
+stop CLIProxyAPI before renaming an old file to a readable `.json` filename, and keep
+its JSON `id` and all other fields unchanged. Back up the file first.
+
+Discover support with `GET /v0/management/quota/providers`, then call
+`POST /v0/management/quota/fetch` with `{"auth_index":"<selected index>"}`.
+These endpoints require the CLIProxyAPI management key. The normalized response contains
+`subscription.plan`, `groups[].buckets[].window`, `remainingFraction`, and `resetTime`.
+Missing windows are omitted. Invalid readings return an error, not an invented zero.
+Quota reset is unsupported. The old plugin quota route and resource page are removed.
