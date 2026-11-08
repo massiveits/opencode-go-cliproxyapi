@@ -466,7 +466,13 @@ func fromClaudeMessages(upstreamModel string, body []byte, ts *pluginapi.Thinkin
 		TopP:            src.TopP,
 	}
 	req.ToolChoice = respToolChoice(src.ToolChoiceKind, src.ToolChoiceName)
-	if shared.ThinkingEnabled(src.Thinking) {
+	if effort := src.OutputConfig.NormalizedEffort(); effort != "" {
+		// Explicit effort wins over a budget-derived level and follows the
+		// Chat-source leg: forwarded as-is except the "auto" sentinel.
+		if effort != "auto" {
+			req.Reasoning = map[string]any{"effort": effort}
+		}
+	} else if shared.ThinkingEnabled(src.Thinking) {
 		if effort, ok := reasoningEffortFor(thinking.EffortFromBudget(src.Thinking.BudgetTokens, ts), ts); ok {
 			req.Reasoning = map[string]any{"effort": effort}
 		}
