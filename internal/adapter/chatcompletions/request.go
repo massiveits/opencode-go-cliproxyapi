@@ -182,7 +182,11 @@ func claudeToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSuppo
 	if len(src.StopSequences) > 0 {
 		out.Stop = src.StopSequences
 	}
-	if shared.ThinkingEnabled(src.Thinking) {
+	if effort := src.OutputConfig.NormalizedEffort(); effort != "" {
+		// Explicit effort wins over a budget-derived level and forwards
+		// as-is, matching the Responses-source leg.
+		out.ReasoningEffort = effort
+	} else if shared.ThinkingEnabled(src.Thinking) {
 		out.ReasoningEffort = thinking.EffortFromBudget(src.Thinking.BudgetTokens, ts)
 	}
 	applyToolChoiceCC(out, src.ToolChoiceKind, src.ToolChoiceName)

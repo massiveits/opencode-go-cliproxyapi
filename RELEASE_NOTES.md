@@ -2,6 +2,8 @@
 
 ### Bug Fixes
 
+- Preserve Claude `output_config.effort` when routing Messages requests to Chat Completions and Responses models. The explicit effort now takes precedence over the level derived from a thinking budget; `auto` is still omitted on the Responses wire.
+
 - Preserve Claude image tool results when routing to Chat Completions: retain images in an associated user message after tool replies, preserve text, tool references and error markers, and include images in session derivation. The selected upstream model must support image input.
 
 Special thanks to @c0mm4nd in #16.
