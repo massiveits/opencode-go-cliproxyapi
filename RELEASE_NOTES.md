@@ -2,6 +2,8 @@
 
 ### Bug Fixes
 
+- Preserve DeepSeek `reasoning_content` across Responses tool turns on Chat Completions routes: streamed and non-streamed responses return it as a reasoning output item, which is restored to the matching assistant turn on replay. Assistant turns with no recoverable reasoning send an empty `reasoning_content` to DeepSeek models. Foreign reasoning summaries and encrypted reasoning are not replayed as full reasoning.
+
 - Preserve Claude image tool results when routing to Chat Completions: retain images in an associated user message after tool replies, preserve text, tool references and error markers, and include images in session derivation. The selected upstream model must support image input.
 
 Special thanks to @c0mm4nd in #16.
