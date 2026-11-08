@@ -2,6 +2,8 @@
 
 ### Bug Fixes
 
+- Read context/output limits and modalities from the nested `limit` and `modalities` objects in the dynamic OpenCode Go `/models` catalog, so registered models carry them again. Flat fields remain a fallback; malformed or non-positive values are ignored with a diagnostic instead of failing discovery. Routing is unchanged.
+
 - Preserve Claude image tool results when routing to Chat Completions: retain images in an associated user message after tool replies, preserve text, tool references and error markers, and include images in session derivation. The selected upstream model must support image input.
 
 Special thanks to @c0mm4nd in #16.
