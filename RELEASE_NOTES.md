@@ -2,17 +2,17 @@
 
 ### Bug Fixes
 
-- Preserve Claude image tool results when routing to Chat Completions: retain images in an associated user message after tool replies, preserve text, tool references and error markers, and include images in session derivation. The selected upstream model must support image input.
+- Read context/output limits and modalities from the nested `limit` and `modalities` objects in the dynamic OpenCode Go `/models` catalog, so registered models carry them again. Flat fields remain a fallback; malformed or non-positive values are ignored with a diagnostic instead of failing discovery. Routing is unchanged.
 
-Special thanks to @c0mm4nd in #16.
+- Preserve DeepSeek `reasoning_content` across Responses tool turns on Chat Completions routes: streamed and non-streamed responses return it as a reasoning output item, which is restored to the matching assistant turn on replay. Assistant turns with no recoverable reasoning send an empty `reasoning_content` to DeepSeek models. Foreign reasoning summaries and encrypted reasoning are not replayed as full reasoning.
 
-- Fix `tool_result` translation when receiving `tool_reference` content blocks from Claude clients (such as ToolSearch, web search, or web fetch in Claude Code), preventing 500 errors and conversation lockouts on Chat Completions and Responses models like DeepSeek.
+- Preserve Claude `output_config.effort` when routing Messages requests to Chat Completions and Responses models. The explicit effort now takes precedence over the level derived from a thinking budget; `auto` is still omitted on the Responses wire.
 
-Special thanks to @SpiGAndromeda in #14.
+Special thanks to @samaluk in #19, #20, and #21.
 
 ## Upgrade Notes
 
 - Replace the old plugin binary with the new release binary.
 - Restart CLIProxyAPI after replacing the plugin.
 
-**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.2.1...v0.2.2
+**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.2.2...v0.2.3
