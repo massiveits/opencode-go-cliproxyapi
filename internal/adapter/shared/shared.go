@@ -1339,6 +1339,20 @@ type ClaudeThinking struct {
 	BudgetTokens int64  `json:"budget_tokens"`
 }
 
+// ClaudeOutputConfig carries named effort independently of a thinking budget.
+type ClaudeOutputConfig struct {
+	Effort string `json:"effort"`
+}
+
+// NormalizedEffort returns the trimmed, lower-cased explicit effort, or ""
+// when none was supplied.
+func (c *ClaudeOutputConfig) NormalizedEffort() string {
+	if c == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(c.Effort))
+}
+
 // ThinkingEnabled reports whether an Anthropic thinking control requests
 // extended thinking: present with type "enabled" (FR-005). One kernel
 // serves every adapter gating on the control so the check cannot diverge.
@@ -1386,6 +1400,7 @@ type ClaudeRequestRecord struct {
 	ToolChoiceKind string
 	ToolChoiceName string
 	Thinking       *ClaudeThinking
+	OutputConfig   *ClaudeOutputConfig
 	Stream         bool
 	Temperature    *float64
 	TopP           *float64
@@ -1432,6 +1447,7 @@ func DecodeClaudeMessages(body json.RawMessage) (*ClaudeRequestRecord, *errclass
 		Tools         []ClaudeTool        `json:"tools"`
 		ToolChoice    json.RawMessage     `json:"tool_choice"`
 		Thinking      *ClaudeThinking     `json:"thinking"`
+		OutputConfig  *ClaudeOutputConfig `json:"output_config"`
 		Stream        bool                `json:"stream"`
 		Temperature   *float64            `json:"temperature"`
 		TopP          *float64            `json:"top_p"`
@@ -1455,6 +1471,7 @@ func DecodeClaudeMessages(body json.RawMessage) (*ClaudeRequestRecord, *errclass
 		ToolChoiceKind: kind,
 		ToolChoiceName: name,
 		Thinking:       env.Thinking,
+		OutputConfig:   env.OutputConfig,
 		Stream:         env.Stream,
 		Temperature:    env.Temperature,
 		TopP:           env.TopP,
