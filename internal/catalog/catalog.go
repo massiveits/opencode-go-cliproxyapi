@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -89,7 +90,8 @@ type HostClient interface {
 // rawModel tolerantly decodes one catalog entry; unknown fields —
 // including protocol/endpoint fields the catalog does not provide and
 // reasoning/tool_calling flags the plugin does not act on — are ignored via
-// json tags. Modality metadata accepts both spellings.
+// json tags. Modality metadata accepts both flat spellings and the current
+// native nested limit/modalities objects (see nativeMetadata).
 type rawModel struct {
 	ID               string       `json:"id"`
 	DisplayName      string       `json:"display_name"`
@@ -100,6 +102,10 @@ type rawModel struct {
 	InputModalities  []string     `json:"input_modalities"`
 	OutputModalities []string     `json:"output_modalities"`
 	Thinking         *rawThinking `json:"thinking"`
+	// Current OpenCode Go metadata nests limits and modalities. Kept raw so
+	// one malformed object is diagnosed instead of failing the catalog.
+	Limit      json.RawMessage `json:"limit"`
+	Modalities json.RawMessage `json:"modalities"`
 }
 
 // rawThinking tolerantly decodes the optional per-model thinking object;
@@ -297,8 +303,8 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 		if endpoint == "" {
 			endpoint = route.EndpointPath()
 		}
-		inputModes := firstNonEmpty(e.InputModes, e.InputModalities)
-		outputModes := firstNonEmpty(e.OutputModes, e.OutputModalities)
+		meta, metaWarns := nativeMetadata(e)
+		warns = append(warns, metaWarns...)
 		display := e.DisplayName
 		if display == "" {
 			display = e.ID
@@ -309,10 +315,10 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			DisplayName:  display,
 			Protocol:     route,
 			EndpointPath: endpoint,
-			ContextLimit: e.ContextLength,
-			OutputLimit:  e.MaxOutputTokens,
-			InputModes:   inputModes,
-			OutputModes:  outputModes,
+			ContextLimit: meta.contextLimit,
+			OutputLimit:  meta.outputLimit,
+			InputModes:   meta.inputModes,
+			OutputModes:  meta.outputModes,
 			Thinking:     normalizeThinking(e.Thinking),
 		}
 		// With a prefix enabled, one record's PublicID can equal another
@@ -404,11 +410,71 @@ func endpointEscapesBase(baseURL, endpoint string) bool {
 	return !strings.EqualFold(got.Host, base.Host) || got.Scheme != base.Scheme
 }
 
-func firstNonEmpty(a, b []string) []string {
-	if len(a) > 0 {
-		return a
+func firstNonEmpty(lists ...[]string) []string {
+	for _, l := range lists {
+		if len(l) > 0 {
+			return l
+		}
 	}
-	return b
+	return nil
+}
+
+type modelMetadata struct {
+	contextLimit, outputLimit int64
+	inputModes, outputModes   []string
+}
+
+// nativeMetadata resolves limits and modalities. A valid nested native value
+// (limit.context/output, modalities.input/output) takes precedence over the
+// legacy flat fields, which remain the fallback. Limits must be positive
+// integers; anything else is ignored with a diagnostic. Only these fields
+// are read: capability flags such as reasoning do not imply effort levels.
+func nativeMetadata(e rawModel) (modelMetadata, []string) {
+	var warns []string
+	var limit struct {
+		Context, Output any
+	}
+	if len(e.Limit) > 0 && string(e.Limit) != "null" {
+		if err := json.Unmarshal(e.Limit, &limit); err != nil {
+			warns = append(warns, fmt.Sprintf("model %q: ignoring malformed limit metadata", e.ID))
+		}
+	}
+	var modalities struct {
+		Input, Output []string
+	}
+	if len(e.Modalities) > 0 && string(e.Modalities) != "null" {
+		if err := json.Unmarshal(e.Modalities, &modalities); err != nil {
+			warns = append(warns, fmt.Sprintf("model %q: ignoring malformed modalities metadata", e.ID))
+			modalities.Input, modalities.Output = nil, nil
+		}
+	}
+	pick := func(field string, native any, flat int64) int64 {
+		if native != nil {
+			if n, ok := positiveInt(native); ok {
+				return n
+			}
+			warns = append(warns, fmt.Sprintf("model %q: ignoring invalid limit.%s", e.ID, field))
+		}
+		if flat > 0 {
+			return flat
+		}
+		return 0
+	}
+	return modelMetadata{
+		contextLimit: pick("context", limit.Context, e.ContextLength),
+		outputLimit:  pick("output", limit.Output, e.MaxOutputTokens),
+		inputModes:   firstNonEmpty(modalities.Input, e.InputModes, e.InputModalities),
+		outputModes:  firstNonEmpty(modalities.Output, e.OutputModes, e.OutputModalities),
+	}, warns
+}
+
+// positiveInt accepts a JSON number that is a positive integer within int64.
+func positiveInt(v any) (int64, bool) {
+	f, ok := v.(float64)
+	if !ok || f < 1 || f != math.Trunc(f) || f >= math.MaxInt64 {
+		return 0, false
+	}
+	return int64(f), true
 }
 
 // normalizeThinking converts the decoded raw thinking object into its
