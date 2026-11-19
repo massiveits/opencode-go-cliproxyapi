@@ -25,45 +25,48 @@ type StreamConverter struct {
 	lineBuf      []byte // partial SSE line carried across Feed calls
 	done         bool
 
-	started      bool // message_start / first chunk seen
-	id           string
-	model        string
-	claudeEm     shared.ClaudeEventEmitter // canonical Messages frames bound to first-chunk identity
-	textOpen     bool                      // claude text content_block open
-	textIndex    int                       // claude index of the currently-open text block
-	nextIndex    int                       // next output/block index
-	msgIndex     int                       // announced assistant message item index (-1 until text)
-	tools        map[int64]*streamTool
-	toolOrder    []int64 // upstream tool_call indices in first-arrival order
-	toolsSeen    bool    // any tool_calls entry observed (terminal-reason precedence)
-	usage        *ccUsage
-	finished     bool            // finish_reason processed
-	heldFinish   string          // finish_reason awaiting terminal emission (flushed on the next data line or [DONE], so the standard include_usage trailer lands in the terminal event; Flush covers close-without-[DONE])
-	terminalSent bool            // claudeTerminal already emitted message_delta (Flush must still close with message_stop)
-	flushed      bool            // Flush already ran (one-shot guard)
-	respText     strings.Builder // openai-response accumulated output_text
-	respTools    *shared.ResponseTools
+	started        bool // message_start / first chunk seen
+	id             string
+	model          string
+	claudeEm       shared.ClaudeEventEmitter // canonical Messages frames bound to first-chunk identity
+	textOpen       bool                      // claude text content_block open
+	textIndex      int                       // claude index of the currently-open text block
+	nextIndex      int                       // next output/block index
+	msgIndex       int                       // announced assistant message item index (-1 until text)
+	tools          map[int64]*streamTool
+	toolOrder      []int64 // upstream tool_call indices in first-arrival order
+	toolsSeen      bool    // any tool_calls entry observed (terminal-reason precedence)
+	usage          *ccUsage
+	finished       bool            // finish_reason processed
+	heldFinish     string          // finish_reason awaiting terminal emission (flushed on the next data line or [DONE], so the standard include_usage trailer lands in the terminal event; Flush covers close-without-[DONE])
+	terminalSent   bool            // claudeTerminal already emitted message_delta (Flush must still close with message_stop)
+	flushed        bool            // Flush already ran (one-shot guard)
+	respText       strings.Builder // openai-response accumulated output_text
+	respTools      *shared.ResponseTools
+	reasoningIndex int
+	respReasoning  strings.Builder
 }
 
 // streamTool accumulates one upstream tool_calls index; args collects
 // argument fragments so the terminal response.completed output carries the
 // complete call (FR-006).
 type streamTool struct {
-	blockIndex int
-	id         string
-	name       string
-	args       strings.Builder
-	stopped    bool // content_block_stop emitted
-	customEmitted int // custom_tool_call_input bytes already emitted as deltas
+	blockIndex    int
+	id            string
+	name          string
+	args          strings.Builder
+	stopped       bool // content_block_stop emitted
+	customEmitted int  // custom_tool_call_input bytes already emitted as deltas
 }
 
 // NewStreamConverter returns a converter translating Chat Completions
 // SSE into sourceFormat's stream shape.
 func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *StreamConverter {
 	sc := &StreamConverter{
-		sourceFormat: sourceFormat,
-		msgIndex:     -1,
-		tools:        map[int64]*streamTool{},
+		sourceFormat:   sourceFormat,
+		msgIndex:       -1,
+		reasoningIndex: -1,
+		tools:          map[int64]*streamTool{},
 	}
 	if len(tools) > 0 && tools[0] != nil {
 		sc.respTools = tools[0]
@@ -190,8 +193,9 @@ type ccToolCallDelta struct {
 }
 
 type ccDelta struct {
-	Content   string            `json:"content"`
-	ToolCalls []ccToolCallDelta `json:"tool_calls"`
+	ReasoningContent string            `json:"reasoning_content"`
+	Content          string            `json:"content"`
+	ToolCalls        []ccToolCallDelta `json:"tool_calls"`
 }
 
 type ccChunkChoice struct {
@@ -450,6 +454,16 @@ func (sc *StreamConverter) responsesLine(line string) ([][]byte, *errclass.Error
 		return events, nil
 	}
 	choice := chunk.Choices[0]
+	if text := choice.Delta.ReasoningContent; text != "" {
+		if sc.reasoningIndex < 0 {
+			sc.reasoningIndex = sc.nextIndex
+			sc.nextIndex++
+			events = append(events, sc.responsesEm().ItemAdded(sc.reasoningIndex, reasoningItem(sc.id, "")))
+			events = append(events, shared.SSEEvent("response.reasoning_summary_part.added", map[string]any{"type": "response.reasoning_summary_part.added", "item_id": reasoningIDPrefix + sc.id, "output_index": sc.reasoningIndex, "summary_index": 0, "part": map[string]any{"type": "summary_text", "text": ""}}))
+		}
+		sc.respReasoning.WriteString(text)
+		events = append(events, shared.SSEEvent("response.reasoning_summary_text.delta", map[string]any{"type": "response.reasoning_summary_text.delta", "item_id": reasoningIDPrefix + sc.id, "output_index": sc.reasoningIndex, "summary_index": 0, "delta": text}))
+	}
 	if choice.Delta.Content != "" {
 		if sc.msgIndex < 0 {
 			sc.msgIndex = sc.nextIndex
@@ -556,9 +570,23 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 	}
 	usage := shared.NewResponsesUsageFrom(input, outputTokens, details)
 	items := oa.Render()
+	if sc.reasoningIndex >= 0 {
+		index := min(sc.reasoningIndex, len(items))
+		items = append(items, nil)
+		copy(items[index+1:], items[index:])
+		items[index] = reasoningItem(sc.id, sc.respReasoning.String())
+	}
 	em := sc.responsesEm()
 	var events [][]byte
 	for idx, item := range items {
+		if idx == sc.reasoningIndex {
+			text := sc.respReasoning.String()
+			events = append(events,
+				shared.SSEEvent("response.reasoning_summary_text.done", map[string]any{"type": "response.reasoning_summary_text.done", "item_id": reasoningIDPrefix + sc.id, "output_index": idx, "summary_index": 0, "text": text}),
+				shared.SSEEvent("response.reasoning_summary_part.done", map[string]any{"type": "response.reasoning_summary_part.done", "item_id": reasoningIDPrefix + sc.id, "output_index": idx, "summary_index": 0, "part": map[string]any{"type": "summary_text", "text": text}}),
+				em.ItemDone(idx, item))
+			continue
+		}
 		v, ok := item.(shared.RespItem)
 		if !ok {
 			continue

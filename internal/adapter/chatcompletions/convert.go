@@ -11,8 +11,9 @@ import (
 // ---- upstream Chat Completions response shapes (FR-006) ----
 
 type ccRespMessage struct {
-	Content   json.RawMessage     `json:"content"` // JSON string or part array
-	ToolCalls []shared.CCToolCall `json:"tool_calls"`
+	ReasoningContent string              `json:"reasoning_content"`
+	Content          json.RawMessage     `json:"content"` // JSON string or part array
+	ToolCalls        []shared.CCToolCall `json:"tool_calls"`
 }
 
 type ccChoice struct {
@@ -192,6 +193,9 @@ func chatToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *errc
 		oa.AppendFunctionCall(tc.ID, tc.Function.Name, shared.DefaultArgs(tc.Function.Arguments))
 	}
 	out.Output = oa.Render()
+	if choice.Message.ReasoningContent != "" {
+		out.Output = append([]any{reasoningItem(resp.ID, choice.Message.ReasoningContent)}, out.Output...)
+	}
 	if resp.Usage != nil {
 		var details shared.UsageDetails
 		if resp.Usage.PromptDetails != nil {

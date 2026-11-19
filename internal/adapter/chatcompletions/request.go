@@ -124,10 +124,11 @@ type ccContentPart struct {
 }
 
 type ccMessage struct {
-	Role       string              `json:"role"`
-	Content    any                 `json:"content"` // string, []ccContentPart, or nil
-	ToolCalls  []shared.CCToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string              `json:"tool_call_id,omitempty"`
+	Role             string              `json:"role"`
+	Content          any                 `json:"content"` // string, []ccContentPart, or nil
+	ToolCalls        []shared.CCToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string              `json:"tool_call_id,omitempty"`
+	ReasoningContent *string             `json:"reasoning_content,omitempty"`
 }
 
 type ccRequest struct {
@@ -149,6 +150,17 @@ type ccRequest struct {
 func encode(req *ccRequest) []byte {
 	if req.Messages == nil {
 		req.Messages = []ccMessage{}
+	}
+	if strings.HasPrefix(strings.ToLower(req.Model), "deepseek-") {
+		for i := range req.Messages {
+			m := &req.Messages[i]
+			if m.Role == "assistant" && m.ReasoningContent == nil {
+				// Older histories and other providers may have no recoverable reasoning.
+				// DeepSeek requires the field even for those assistant turns.
+				empty := ""
+				m.ReasoningContent = &empty
+			}
+		}
 	}
 	b, _ := json.Marshal(req)
 	return b
@@ -339,8 +351,8 @@ func claudeAssistantMessage(m *shared.ClaudeMessageRecord) (*ccMessage, *errclas
 // messages, reasoning.effort maps to reasoning_effort,
 // parallel_tool_calls passes through as-is (the reverse leg forwards the
 // same field), and max_output_tokens maps to max_tokens. Historical
-// reasoning items are omitted (no CC equivalent; FR-005 explicit omission
-// policy).
+// reasoning emitted by this adapter is restored to reasoning_content.
+// Foreign summaries and encrypted reasoning remain opaque.
 func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport, tools *shared.ResponseTools) ([]byte, *errclass.Error) {
 	var src shared.ResponsesRequest
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -379,6 +391,7 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 		return nil, eErr
 	}
 	applyToolChoiceCC(out, kind, tcName)
+	var pendingReasoning *string
 	for _, item := range items {
 		switch item.Type {
 		case "message":
@@ -406,7 +419,13 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 				addSystem(text)
 			case "user", "assistant":
 				if content != nil {
-					out.Messages = append(out.Messages, ccMessage{Role: item.Role, Content: content})
+					msg := ccMessage{Role: item.Role, Content: content}
+					// Reasoning attaches once, to the assistant turn that follows it.
+					if item.Role == "assistant" {
+						msg.ReasoningContent = pendingReasoning
+					}
+					pendingReasoning = nil
+					out.Messages = append(out.Messages, msg)
 				}
 			default:
 				return nil, shared.ValidateRole(item.Role, EndpointPath)
@@ -423,15 +442,17 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 			// assistant message so multi-call turns round-trip.
 			if n := len(out.Messages); n > 0 {
 				last := &out.Messages[n-1]
-				if last.Role == "assistant" && last.Content == nil {
+				if last.Role == "assistant" && (last.Content == nil || last.ReasoningContent != nil) {
 					last.ToolCalls = append(last.ToolCalls, tc)
 					continue
 				}
 			}
 			out.Messages = append(out.Messages, ccMessage{
-				Role: "assistant", ToolCalls: []shared.CCToolCall{tc},
+				Role: "assistant", ToolCalls: []shared.CCToolCall{tc}, ReasoningContent: pendingReasoning,
 			})
+			pendingReasoning = nil
 		case "function_call_output", "custom_tool_call_output":
+			pendingReasoning = nil
 			text, eErr := shared.RespOutputText(item.Output, "tool messages carry text only")
 			if eErr != nil {
 				return nil, eErr
@@ -440,7 +461,16 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 				Role: "tool", Content: text, ToolCallID: item.CallID,
 			})
 		case "reasoning":
-			// omitted: no Chat Completions equivalent (FR-005 policy)
+			// Only our own full-text carrier is replayable; foreign summaries are not full reasoning.
+			pendingReasoning = nil
+			if strings.HasPrefix(item.ID, reasoningIDPrefix) {
+				var b strings.Builder
+				for _, part := range item.Summary {
+					b.WriteString(part.Text)
+				}
+				value := b.String()
+				pendingReasoning = &value
+			}
 		default:
 			return nil, shared.UnsupportedInputItemType(item.Type)
 		}
